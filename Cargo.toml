@@ -5,3 +5,4 @@ edition = "2018"
 
 [dependencies]
 rustc_serialize = { path = "../rustc_serialize" }
+smol_str = { path = "../smol_str", default-features = false }
