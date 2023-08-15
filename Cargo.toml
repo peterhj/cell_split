@@ -1,5 +1,5 @@
 [package]
-name = "cellsplit"
+name = "cell_split"
 version = "0.1.0-devel"
 edition = "2018"
 
