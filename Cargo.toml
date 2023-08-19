@@ -2,7 +2,9 @@
 name = "cell_split"
 version = "0.1.0-devel"
 edition = "2018"
+license = "ISC OR Apache-2.0"
 
 [dependencies]
+byteorder = { path = "../byteorder" }
 rustc_serialize = { path = "../rustc_serialize" }
 smol_str = { path = "../smol_str", default-features = false }

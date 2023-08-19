@@ -1,3 +1,4 @@
+extern crate byteorder;
 extern crate rustc_serialize;
 extern crate smol_str;
 
@@ -6,6 +7,8 @@ use smol_str::{SmolStr};
 
 //use std::convert::{TryFrom, TryInto};
 use std::str::{FromStr};
+
+pub mod safetensor;
 
 #[derive(Clone, Debug)]
 pub struct Header {
@@ -30,12 +33,14 @@ pub struct Row {
   pub eoff: u64,
 }
 
-#[derive(Clone, Copy, Debug, RustcDecodable, RustcEncodable)]
+pub type Version = u64;
+
+/*#[derive(Clone, Copy, Debug, RustcDecodable, RustcEncodable)]
 //#[derive(Clone, Debug)]
 pub struct Version {
   pub rst: u64,
   pub up: i32,
-}
+}*/
 
 #[derive(Clone, Debug, RustcDecodable, RustcEncodable)]
 //#[derive(Clone, Debug)]
@@ -51,6 +56,7 @@ pub enum Dtype {
   F64,
   F32,
   // TODO
+  U8,
   F16,
 }
 
@@ -62,6 +68,7 @@ impl FromStr for Dtype {
       "f64" => Dtype::F64,
       "f32" => Dtype::F32,
       // TODO
+      "u8" => Dtype::U8,
       "f16" => Dtype::F16,
       _ => return Err(s.into())
     })
@@ -74,8 +81,19 @@ impl Dtype {
       &Dtype::F64 => "f64",
       &Dtype::F32 => "f32",
       // TODO
+      &Dtype::U8  => "u8",
       &Dtype::F16 => "f16",
     }
+  }
+
+  pub fn size_bytes(&self) -> Option<u64> {
+    Some(match self {
+      &Dtype::F64 => 8,
+      &Dtype::F32 => 4,
+      // TODO
+      &Dtype::U8  => 1,
+      &Dtype::F16 => 2,
+    })
   }
 }
 
