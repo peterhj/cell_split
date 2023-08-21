@@ -55,9 +55,16 @@ pub struct CellType {
 pub enum Dtype {
   F64,
   F32,
-  // TODO
+  I64,
+  I32,
+  I16,
+  I8,
+  U64,
+  U32,
+  U16,
   U8,
   F16,
+  Bf16,
 }
 
 impl FromStr for Dtype {
@@ -67,9 +74,16 @@ impl FromStr for Dtype {
     Ok(match s {
       "f64" => Dtype::F64,
       "f32" => Dtype::F32,
-      // TODO
+      "i64" => Dtype::I64,
+      "i32" => Dtype::I32,
+      "i16" => Dtype::I16,
+      "i8" => Dtype::I8,
+      "u64" => Dtype::U64,
+      "u32" => Dtype::U32,
+      "u16" => Dtype::U16,
       "u8" => Dtype::U8,
       "f16" => Dtype::F16,
+      "bf16" => Dtype::Bf16,
       _ => return Err(s.into())
     })
   }
@@ -80,9 +94,16 @@ impl Dtype {
     match self {
       &Dtype::F64 => "f64",
       &Dtype::F32 => "f32",
-      // TODO
+      &Dtype::I64 => "i64",
+      &Dtype::I32 => "i32",
+      &Dtype::I16 => "i16",
+      &Dtype::I8  => "i8",
+      &Dtype::U64 => "u64",
+      &Dtype::U32 => "u32",
+      &Dtype::U16 => "u16",
       &Dtype::U8  => "u8",
       &Dtype::F16 => "f16",
+      &Dtype::Bf16 => "bf16",
     }
   }
 
@@ -90,9 +111,16 @@ impl Dtype {
     Some(match self {
       &Dtype::F64 => 8,
       &Dtype::F32 => 4,
-      // TODO
+      &Dtype::I64 => 8,
+      &Dtype::I32 => 4,
+      &Dtype::I16 => 2,
+      &Dtype::I8  => 1,
+      &Dtype::U64 => 8,
+      &Dtype::U32 => 4,
+      &Dtype::U16 => 2,
       &Dtype::U8  => 1,
       &Dtype::F16 => 2,
+      &Dtype::Bf16 => 2,
     })
   }
 }
@@ -153,6 +181,10 @@ impl SplitFile {
   /*pub fn iter_headers(&self) -> impl Iterator<Item=Header> {
     unimplemented!();
   }*/
+
+  pub fn latest_version(&self) -> Version {
+    unimplemented!();
+  }
 
   pub fn get_latest<S: AsRef<str>>(&self, key: S) -> Option<Row> {
     unimplemented!();

@@ -42,10 +42,17 @@ impl From<DecoderError> for Error {
 pub enum TensorDtype {
   F64,
   F32,
-  // TODO
+  I64,
+  I32,
+  I16,
+  I8,
+  U64,
+  U32,
+  U16,
   U8,
   Bool,
   F16,
+  Bf16,
 }
 
 impl FromStr for TensorDtype {
@@ -53,17 +60,19 @@ impl FromStr for TensorDtype {
 
   fn from_str(s: &str) -> Result<TensorDtype, SmolStr> {
     Ok(match s {
-      "F64" |
-      "f64" => TensorDtype::F64,
-      "F32" |
-      "f32" => TensorDtype::F32,
-      // TODO
-      "U8" |
-      "u8" => TensorDtype::U8,
-      "BOOL" |
-      "bool" => TensorDtype::Bool,
-      "F16" |
-      "f16" => TensorDtype::F16,
+      "F64" => TensorDtype::F64,
+      "F32" => TensorDtype::F32,
+      "I64" => TensorDtype::I64,
+      "I32" => TensorDtype::I32,
+      "I16" => TensorDtype::I16,
+      "I8" => TensorDtype::I8,
+      "U64" => TensorDtype::U64,
+      "U32" => TensorDtype::U32,
+      "U16" => TensorDtype::U16,
+      "U8" => TensorDtype::U8,
+      "BOOL" => TensorDtype::Bool,
+      "F16" => TensorDtype::F16,
+      "BF16" => TensorDtype::Bf16,
       _ => return Err(s.into())
     })
   }
@@ -72,12 +81,19 @@ impl FromStr for TensorDtype {
 impl TensorDtype {
   pub fn to_str(&self) -> &'static str {
     match self {
-      &TensorDtype::F64 => "f64",
-      &TensorDtype::F32 => "f32",
-      // TODO
-      &TensorDtype::U8  => "u8",
-      &TensorDtype::Bool => "bool",
-      &TensorDtype::F16 => "f16",
+      &TensorDtype::F64 => "F64",
+      &TensorDtype::F32 => "F32",
+      &TensorDtype::I64 => "I64",
+      &TensorDtype::I32 => "I32",
+      &TensorDtype::I16 => "I16",
+      &TensorDtype::I8  => "I8",
+      &TensorDtype::U64 => "U64",
+      &TensorDtype::U32 => "U32",
+      &TensorDtype::U16 => "U16",
+      &TensorDtype::U8  => "U8",
+      &TensorDtype::Bool => "BOOL",
+      &TensorDtype::F16 => "F16",
+      &TensorDtype::Bf16 => "BF16",
     }
   }
 
@@ -85,10 +101,17 @@ impl TensorDtype {
     Some(match self {
       &TensorDtype::F64 => 8,
       &TensorDtype::F32 => 4,
-      // TODO
+      &TensorDtype::I64 => 8,
+      &TensorDtype::I32 => 4,
+      &TensorDtype::I16  => 2,
+      &TensorDtype::I8  => 1,
+      &TensorDtype::U64 => 8,
+      &TensorDtype::U32 => 4,
+      &TensorDtype::U16  => 2,
       &TensorDtype::U8  => 1,
       &TensorDtype::Bool => 1,
       &TensorDtype::F16 => 2,
+      &TensorDtype::Bf16 => 2,
     })
   }
 }
