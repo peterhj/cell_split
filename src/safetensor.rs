@@ -1,13 +1,15 @@
-use crate::{Dtype};
+//use crate::{Dtype};
 
-use byteorder::{ReadBytesExt, LittleEndian as LE};
-use rustc_serialize::json::{Json, ParserError, DecoderError, decode_from_json};
+use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian as LE};
+use rustc_serialize::*;
+use rustc_serialize::json::{Config, Json, ParserError, DecoderError, decode_from_json, encode_to_bytes};
 use smol_str::{SmolStr};
 
 use std::collections::{BTreeMap};
 use std::convert::{TryInto};
-use std::io::{Read, Cursor, Error as IoError};
+use std::io::{Read, Write, Cursor, Error as IoError};
 use std::mem::{size_of};
+use std::str::{FromStr};
 
 // TODO
 
@@ -36,13 +38,82 @@ impl From<DecoderError> for Error {
   }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum TensorDtype {
+  F64,
+  F32,
+  // TODO
+  U8,
+  Bool,
+  F16,
+}
+
+impl FromStr for TensorDtype {
+  type Err = SmolStr;
+
+  fn from_str(s: &str) -> Result<TensorDtype, SmolStr> {
+    Ok(match s {
+      "F64" |
+      "f64" => TensorDtype::F64,
+      "F32" |
+      "f32" => TensorDtype::F32,
+      // TODO
+      "U8" |
+      "u8" => TensorDtype::U8,
+      "BOOL" |
+      "bool" => TensorDtype::Bool,
+      "F16" |
+      "f16" => TensorDtype::F16,
+      _ => return Err(s.into())
+    })
+  }
+}
+
+impl TensorDtype {
+  pub fn to_str(&self) -> &'static str {
+    match self {
+      &TensorDtype::F64 => "f64",
+      &TensorDtype::F32 => "f32",
+      // TODO
+      &TensorDtype::U8  => "u8",
+      &TensorDtype::Bool => "bool",
+      &TensorDtype::F16 => "f16",
+    }
+  }
+
+  pub fn size_bytes(&self) -> Option<u64> {
+    Some(match self {
+      &TensorDtype::F64 => 8,
+      &TensorDtype::F32 => 4,
+      // TODO
+      &TensorDtype::U8  => 1,
+      &TensorDtype::Bool => 1,
+      &TensorDtype::F16 => 2,
+    })
+  }
+}
+
+impl Decodable for TensorDtype {
+  fn decode<D: Decoder>(d: &mut D) -> Result<TensorDtype, D::Error> {
+    TensorDtype::from_str(d.read_str()?.as_str()).map_err(|_| d.error("invalid dtype"))
+  }
+}
+
+impl Encodable for TensorDtype {
+  fn encode<E: Encoder>(&self, e: &mut E) -> Result<(), E::Error> {
+    e.emit_str(self.to_str())
+  }
+}
+
 #[derive(Clone, RustcDecodable, Debug)]
 pub struct TensorEntry {
   pub shape: Vec<i64>,
-  pub dtype: Dtype,
-  pub offsets: [u64; 2],
+  pub dtype: TensorDtype,
+  pub data_offsets: Vec<u64>,
+  //pub data_offsets: [u64; 2],
 }
 
+#[derive(Debug)]
 pub struct TensorsDict {
   pub buf_start: u64,
   pub entries: BTreeMap<SmolStr, TensorEntry>,
@@ -68,21 +139,32 @@ pub fn fixup_toplevel_metadata(mut j: Json) -> (Json, Option<Json>) {
 
 impl TensorsDict {
   pub fn from_reader<R: Read>(mut reader: R) -> Result<TensorsDict, Error> {
+    println!("DEBUG: TensorsDict::from_reader");
     let magic = reader.read_u64::<LE>()?;
+    println!("DEBUG: TensorsDict::from_reader: magic=0x{:016x}", magic);
     let buf_start = (size_of::<u64>() as u64) + magic;
+    println!("DEBUG: TensorsDict::from_reader: buf start={}", buf_start);
     let h_sz: usize = magic.try_into().unwrap();
+    println!("DEBUG: TensorsDict::from_reader: header sz={}", h_sz);
     let mut hbuf = Vec::with_capacity(h_sz);
     hbuf.resize(h_sz, 0);
     reader.read_exact(&mut hbuf)?;
-    let hjson = Json::from_reader(Cursor::new(hbuf))?;
+    let mut cfg = Config::default();
+    cfg.allow_trailing = true;
+    cfg.eof_on_trailing_spaces = true;
+    let hjson = cfg.from_reader(Cursor::new(hbuf)).build()?;
     let (hjson, _) = fixup_toplevel_metadata(hjson);
     let entries = decode_from_json(hjson)?;
     Ok(TensorsDict{buf_start, entries})
   }
+
+  /*pub fn write_header<W: Write>(&self, mut writer: W) -> Result<(), Error> {
+    unimplemented!();
+  }*/
 }
 
+/*#[derive(Debug)]
 pub struct TensorsDictBuilder {
-  //pub buf_start: Option<u64>,
   pub end_offset: u64,
   pub entries: Vec<TensorEntry>,
   pub keys: BTreeMap<SmolStr, usize>,
@@ -97,7 +179,7 @@ impl TensorsDictBuilder {
     }
   }
 
-  pub fn insert<K: AsRef<str>>(&mut self, key: K, shape: Vec<i64>, dtype: Dtype) -> Result<(), ()> {
+  pub fn insert<K: AsRef<str>>(&mut self, key: K, shape: Vec<i64>, dtype: TensorDtype) -> Result<(), ()> {
     let key = key.as_ref();
     match self.keys.get(key) {
       None => {}
@@ -120,4 +202,16 @@ impl TensorsDictBuilder {
     self.end_offset = next_end_off;
     Ok(())
   }
-}
+
+  pub fn finalize(self) -> Result<TensorsDict, Error> {
+    let mut entries = BTreeMap::new();
+    for (key, &idx) in self.keys.iter() {
+      let e = self.entries[idx].clone();
+      entries.insert(key.into(), e);
+    }
+    let hbuf = encode_to_bytes(&entries)?;
+    let h_sz = hbuf.len();
+    let buf_start = (size_of::<u64>() as u64) + h_sz as u64;
+    Ok(TensorsDict{buf_start, entries})
+  }
+}*/
