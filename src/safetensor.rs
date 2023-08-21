@@ -1,5 +1,3 @@
-//use crate::{Dtype};
-
 use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian as LE};
 use rustc_serialize::*;
 use rustc_serialize::json::{Config, Json, ParserError, DecoderError, decode_from_json, encode_to_bytes};
@@ -10,8 +8,6 @@ use std::convert::{TryInto};
 use std::io::{Read, Write, Cursor, Error as IoError};
 use std::mem::{size_of};
 use std::str::{FromStr};
-
-// TODO
 
 #[derive(Debug)]
 pub enum Error {
@@ -162,13 +158,9 @@ pub fn fixup_toplevel_metadata(mut j: Json) -> (Json, Option<Json>) {
 
 impl TensorsDict {
   pub fn from_reader<R: Read>(mut reader: R) -> Result<TensorsDict, Error> {
-    println!("DEBUG: TensorsDict::from_reader");
     let magic = reader.read_u64::<LE>()?;
-    println!("DEBUG: TensorsDict::from_reader: magic=0x{:016x}", magic);
     let buf_start = (size_of::<u64>() as u64) + magic;
-    println!("DEBUG: TensorsDict::from_reader: buf start={}", buf_start);
     let h_sz: usize = magic.try_into().unwrap();
-    println!("DEBUG: TensorsDict::from_reader: header sz={}", h_sz);
     let mut hbuf = Vec::with_capacity(h_sz);
     hbuf.resize(h_sz, 0);
     reader.read_exact(&mut hbuf)?;
