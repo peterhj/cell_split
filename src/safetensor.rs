@@ -128,8 +128,8 @@ impl Encodable for TensorDtype {
 pub struct TensorEntry {
   pub shape: Vec<i64>,
   pub dtype: TensorDtype,
-  pub data_offsets: Vec<u64>,
-  //pub data_offsets: [u64; 2],
+  //pub data_offsets: Vec<u64>,
+  pub data_offsets: [u64; 2],
 }
 
 #[derive(Debug)]

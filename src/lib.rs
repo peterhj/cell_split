@@ -3,6 +3,7 @@ extern crate rustc_serialize;
 extern crate smol_str;
 
 use rustc_serialize::*;
+use rustc_serialize::utf8::{len_utf8};
 use smol_str::{SmolStr};
 
 //use std::convert::{TryFrom, TryInto};
@@ -49,7 +50,70 @@ pub struct CellType {
   pub dtype: Dtype,
 }
 
-// TODO: parsing Futhark-style type.
+#[repr(u8)]
+enum TypeParser {
+  LBrack,
+  Len,
+}
+
+impl FromStr for CellType {
+  type Err = SmolStr;
+
+  fn from_str(s: &str) -> Result<CellType, SmolStr> {
+    let mut shape = Vec::new();
+    let mut parse = TypeParser::LBrack;
+    let mut o = 0;
+    loop {
+      match parse {
+        TypeParser::LBrack => {
+          let c = s[o .. ].chars().next();
+          match c {
+            Some('[') => {
+              parse = TypeParser::Len;
+              o += len_utf8(c.unwrap() as _);
+            }
+            _ => {
+              let dtype = Dtype::from_str(&s[o .. ])?;
+              return Ok(CellType{shape, dtype});
+            }
+          }
+        }
+        TypeParser::Len => {
+          let o0 = o;
+          // FIXME: allow hexadecimal lengths?
+          loop {
+            let c = s[o .. ].chars().next();
+            match c {
+              Some('0') |
+              Some('1') |
+              Some('2') |
+              Some('3') |
+              Some('4') |
+              Some('5') |
+              Some('6') |
+              Some('7') |
+              Some('8') |
+              Some('9') => {
+                o += len_utf8(c.unwrap() as _);
+              }
+              Some(']') => {
+                let len: i64 = match (&s[o0 .. o]).parse() {
+                  Ok(n) => n,
+                  Err(_) => return Err(s.into())
+                };
+                shape.push(len);
+                parse = TypeParser::LBrack;
+                o += len_utf8(c.unwrap() as _);
+                break;
+              }
+              _ => return Err(s.into())
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum Dtype {
