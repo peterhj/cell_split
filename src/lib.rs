@@ -113,7 +113,7 @@ pub struct Version {
 #[derive(Clone, Debug, RustcDecodable, RustcEncodable)]
 //#[derive(Clone, Debug)]
 pub struct CellType {
-  pub shape: Vec<i64>,
+  pub shape: Box<[i64]>,
   pub dtype: Dtype,
 }
 
@@ -140,6 +140,7 @@ impl FromStr for CellType {
               o += len_utf8(c.unwrap() as _);
             }
             _ => {
+              let shape = shape.into();
               let dtype = Dtype::from_str(&s[o .. ])?;
               return Ok(CellType{shape, dtype});
             }
@@ -183,8 +184,9 @@ impl FromStr for CellType {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[repr(u8)]
 pub enum Dtype {
-  F64,
+  F64 = 1,
   F32,
   I64,
   I32,
