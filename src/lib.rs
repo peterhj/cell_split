@@ -1,26 +1,36 @@
+extern crate blake2;
+//extern crate blake3;
 extern crate byteorder;
 //extern crate libc;
 extern crate rustc_serialize;
 extern crate smol_str;
 
+use crate::swap::{SwapThreadPool, DfParse};
+
+use blake2::{Blake2b};
 use byteorder::{ReadBytesExt, LittleEndian as LE};
 use rustc_serialize::*;
+use rustc_serialize::hex::{FromHex, ToHex};
 use rustc_serialize::json::{JsonLines, JsonEncoder};
 use rustc_serialize::utf8::{len_utf8};
 use smol_str::{SmolStr};
 
-use std::collections::{BTreeMap};
+use std::collections::{BTreeMap, BTreeSet};
 //use std::convert::{TryFrom, TryInto};
+use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::fs::{File, OpenOptions, remove_file};
 use std::io::{Read, Write, Seek, SeekFrom, Cursor, Error as IoError};
+use std::mem::{replace};
 use std::path::{PathBuf, Path};
 //use std::ptr::{copy_nonoverlapping};
 use std::str::{FromStr};
+use std::sync::{Arc, Mutex};
 
 //pub mod mmap;
 pub mod safetensor;
+pub mod swap;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Header {
   pub split: Option<SplitHeader>,
   pub rows: Vec<Row>,
@@ -96,9 +106,9 @@ pub struct Row {
   //pub ver:  Version,
   pub ty:   CellType,
   pub rep:  CellRepr,
-  //pub hash: HashVal,
   pub off:  u64,
   pub eoff: u64,
+  pub hash: Vec<HashVal>,
 }
 
 //pub type Version = u64;
@@ -308,6 +318,7 @@ impl Encodable for CellRepr {
 
 #[derive(Clone, Copy, Debug)]
 pub enum HashFun {
+  Blake2b,
   Blake3,
 }
 
@@ -316,6 +327,7 @@ impl FromStr for HashFun {
 
   fn from_str(s: &str) -> Result<HashFun, SmolStr> {
     Ok(match s {
+      "blake2b" => HashFun::Blake2b,
       "blake3" => HashFun::Blake3,
       _ => return Err(s.into())
     })
@@ -325,6 +337,7 @@ impl FromStr for HashFun {
 impl HashFun {
   pub fn to_str(&self) -> &'static str {
     match self {
+      &HashFun::Blake2b => "blake2b",
       &HashFun::Blake3 => "blake3",
     }
   }
@@ -342,10 +355,44 @@ impl Encodable for HashFun {
   }
 }
 
-#[derive(Clone, Debug, RustcDecodable, RustcEncodable)]
+#[derive(Clone)]
+pub struct HashHexVal {
+  pub buf: Vec<u8>,
+}
+
+impl Debug for HashHexVal {
+  fn fmt(&self, f: &mut Formatter) -> FmtResult {
+    write!(f, "HashHexVal({})", self.buf.to_hex())
+  }
+}
+
+impl Decodable for HashHexVal {
+  fn decode<D: Decoder>(d: &mut D) -> Result<HashHexVal, D::Error> {
+    let s = String::decode(d)?;
+    // FIXME: rustc_serialize::Decoder::Error should impl
+    // Default, FromStr or both.
+    let buf = s.from_hex().unwrap();
+    Ok(HashHexVal{buf})
+  }
+}
+
+impl Encodable for HashHexVal {
+  fn encode<E: Encoder>(&self, e: &mut E) -> Result<(), E::Error> {
+    let s = self.buf.to_hex();
+    e.emit_str(&s)
+  }
+}
+
+#[derive(Clone, RustcDecodable, RustcEncodable)]
 pub struct HashVal {
   pub fun: HashFun,
-  pub val: String,
+  pub val: HashHexVal,
+}
+
+impl Debug for HashVal {
+  fn fmt(&self, f: &mut Formatter) -> FmtResult {
+    write!(f, "HashVal({:?}, {})", self.fun, self.val.buf.to_hex())
+  }
 }
 
 #[derive(Debug)]
@@ -413,14 +460,21 @@ impl Header {
   }
 }
 
-struct AppendState {
+struct AppendSharedState {
+  doff: Vec<u64>,
+}
+
+pub(crate) struct AppendState {
   file: File,
   hoff: u64,
   hcur: u64,
   //htmp: Vec<u8>,
   htmp: String,
+  head: Header,
   hrow: u32,
+  hctr: u16,
   sync: bool,
+  //pool: bool,
   //splt: bool,
   doff: u64,
   //eoff: u64,
@@ -428,17 +482,20 @@ struct AppendState {
 
 impl Drop for AppendState {
   fn drop(&mut self) {
+    // FIXME: send to pool.
+    /*
     if self.hcur > self.hoff + self.htmp.len() as u64 {
       panic!("bug");
     } else if self.hcur == self.hoff + self.htmp.len() as u64 {
       return;
     }
     assert!(self.htmp.len() < 0x1000);
-    assert!(self.hcur == self.hoff);
+    assert_eq!(self.hcur, self.hoff);
     self.file.seek(SeekFrom::Start(self.hoff)).unwrap();
     self.file.write_all(self.htmp.as_bytes()).unwrap();
     self.hcur += self.htmp.len() as u64;
     assert!(self.hcur < self.hoff + 0x1000);
+    */
   }
 }
 
@@ -458,7 +515,7 @@ struct IndexVal {
 
 enum Mode {
   Top,
-  Append(Vec<AppendState>),
+  Append(AppendSharedState, Vec<Arc<Mutex<AppendState>>>),
   Index(Vec<IndexState>),
   Bot,
 }
@@ -467,28 +524,88 @@ pub struct CellSplit {
   path: Vec<PathBuf>,
   mode: Mode,
   //rank: u32,
+  pool: SwapThreadPool,
 }
 
-/*impl Drop for CellSplit {
-}*/
+impl Drop for CellSplit {
+  fn drop(&mut self) {
+    match &self.mode {
+      &Mode::Append(_, ref states) => {
+        for rank in 0 .. states.len() {
+          let mut state = states[rank].lock().unwrap();
+          if state.hcur > state.hoff + state.htmp.len() as u64 {
+            panic!("bug");
+          } else if state.hcur == state.hoff + state.htmp.len() as u64 {
+            continue;
+          }
+          assert!(state.htmp.len() < 0x1000);
+          assert_eq!(state.hcur, state.hoff);
+          let htmp = replace(&mut state.htmp, String::new());
+          let head = replace(&mut state.head, Header::default());
+          self.pool.put_header(rank, states[rank].clone(), state.hctr, state.hoff, htmp, head);
+          //self.pool.sync(rank);
+          state.hcur += state.htmp.len() as u64;
+          assert!(state.hcur < state.hoff + 0x1000);
+        }
+        /*for rank in 0 .. states.len() {
+          let mut state = states[rank].lock().unwrap();
+          //assert_eq!(self.pool.wait(), rank);
+          self.pool.shutdown();
+        }*/
+      }
+      _ => {}
+    }
+  }
+}
 
 impl CellSplit {
   pub fn new1<P: AsRef<Path>>(path: P) -> CellSplit {
+    let n = 1;
     let path = path.as_ref();
     CellSplit{
       path: vec![PathBuf::from(path)],
       mode: Mode::Top,
+      pool: SwapThreadPool::new(n),
     }
   }
 
   pub fn new2<P0: AsRef<Path>, P1: AsRef<Path>>(p0: P0, p1: P1) -> CellSplit {
+    let n = 2;
     CellSplit{
       path: vec![PathBuf::from(p0.as_ref()), PathBuf::from(p1.as_ref())],
       mode: Mode::Top,
+      pool: SwapThreadPool::new(n),
+    }
+  }
+
+  pub fn new_<P: AsRef<Path>>(paths: &[P]) -> CellSplit {
+    let n = paths.len();
+    let mut path = Vec::with_capacity(paths.len());
+    let mut srcs = BTreeSet::new();
+    for (r, p) in paths.iter().enumerate() {
+      let p = PathBuf::from(p.as_ref());
+      match DfParse::open(&p) {
+        Err(_) => {
+          println!("WARNING:CellSplit::new_: failed to query disk source for rank {}", r);
+        }
+        Ok(parse) => {
+          srcs.insert(parse.source);
+        }
+      }
+      path.push(p);
+    }
+    if srcs.len() < n {
+      println!("WARNING:CellSplit::new_: disk source cardinality {} is less than the size {}", srcs.len(), n);
+    }
+    CellSplit{
+      path,
+      mode: Mode::Top,
+      pool: SwapThreadPool::new(n),
     }
   }
 
   pub fn new<P: AsRef<Path>>(mut roots: Vec<PathBuf>, prefix: P) -> CellSplit {
+    let n = roots.len();
     let prefix = prefix.as_ref();
     let mut path = roots;
     for p in path.iter_mut() {
@@ -497,6 +614,7 @@ impl CellSplit {
     CellSplit{
       path,
       mode: Mode::Top,
+      pool: SwapThreadPool::new(n),
     }
   }
 
@@ -511,6 +629,7 @@ impl CellSplit {
         } else {
           SplitRepr::Balanced
         };
+        let mut shared = AppendSharedState{doff: Vec::new()};
         let mut states = Vec::new();
         for (r, p) in self.path.iter().enumerate() {
           let rank = r as u32;
@@ -524,7 +643,11 @@ impl CellSplit {
             hcur: 0,
             //htmp: Vec::new(),
             htmp: String::new(),
+            head: Header::default(),
+            //hash: Vec::new(),
+            //hpos: Vec::new(),
             hrow: 0,
+            hctr: 0,
             sync: false,
             //splt: false,
             doff: 0x1000,
@@ -542,13 +665,15 @@ impl CellSplit {
             }
             state.htmp.push('\n');
             assert!(state.htmp.len() + 40 < 0x1000);
+            state.head.split = Some(split);
             //state.splt = true;
           }
-          states.push(state);
+          states.push(Arc::new(Mutex::new(state)));
+          shared.doff.push(0x1000);
         }
-        self.mode = Mode::Append(states);
+        self.mode = Mode::Append(shared, states);
       }
-      &Mode::Append(_) => {}
+      &Mode::Append(..) => {}
       &Mode::Index(_) => panic!("bug"),
       _ => panic!("bug")
     }
@@ -557,7 +682,7 @@ impl CellSplit {
   pub fn _index(&mut self) {
     match &self.mode {
       &Mode::Top |
-      &Mode::Append(_) => {
+      &Mode::Append(..) => {
         let mut states = Vec::new();
         for p in self.path.iter() {
           let mut file = File::open(p).unwrap();
@@ -659,14 +784,17 @@ impl CellSplit {
   pub fn put<K: AsRef<str>, T: Into<CellType>, R: Into<CellRepr>>(&mut self, key: K, ty: T, rep: R, data: &[u8]) -> (u64, u64) {
     self._append();
     match &mut self.mode {
-      &mut Mode::Append(ref mut states) => {
-        let rank = if states.len() == 0 {
+      &mut Mode::Append(ref mut shared, ref mut states) => {
+        let (rank, last_doff) = if states.len() == 0 {
           panic!("bug");
         } else if states.len() == 1 {
-          0
+          (0, states[0].lock().unwrap().doff)
         } else {
+          // FIXME: the nonblocking version of put needs
+          // an atomic copy of doff.
           let mut min_doff = None;
           for (rank, state) in states.iter().enumerate() {
+            let state = state.lock().unwrap();
             match min_doff {
               None => {
                 min_doff = Some((rank, state.doff));
@@ -676,20 +804,28 @@ impl CellSplit {
               }
             }
           }
-          min_doff.unwrap().0
+          min_doff.unwrap()
         };
-        let state = &mut states[rank];
+        let mut state = states[rank].lock().unwrap();
+        assert_eq!(last_doff, state.doff);
+        assert_eq!(state.hcur, state.hoff);
+        let olen = state.htmp.len();
+        assert!(olen + 40 < 0x1000);
         let key = key.as_ref();
         let mut row = Row{
           key: key.into(),
           ty: ty.into(),
           rep: rep.into(),
+          hash: Vec::new(),
           off: state.doff,
           eoff: state.doff + data.len() as u64,
         };
-        assert!(state.hcur == state.hoff);
-        let olen = state.htmp.len();
-        assert!(olen + 40 < 0x1000);
+        let mut hasher = Blake2b::default();
+        hasher.update(data);
+        row.hash.push(HashVal{
+          fun: HashFun::Blake2b,
+          val: HashHexVal{buf: hasher.finalize().as_bytes().into()},
+        });
         let mut retry = false;
         loop {
           {
@@ -697,6 +833,7 @@ impl CellSplit {
             row.encode(&mut enc).unwrap();
           }
           state.htmp.push('\n');
+          state.head.rows.push(row.clone());
           if state.htmp.len() + 40 >= 0x1000 {
             assert!(!retry);
             state.htmp.truncate(olen);
@@ -709,9 +846,17 @@ impl CellSplit {
             }
             state.htmp.push('\n');
             assert!(state.htmp.len() < 0x1000);
-            state.file.seek(SeekFrom::Start(state.hoff)).unwrap();
-            state.file.write_all(state.htmp.as_bytes()).unwrap();
+            state.head.next = Some(next);
+            {
+              let prev_hoff = state.hoff;
+              state.file.seek(SeekFrom::Start(prev_hoff)).unwrap();
+              let &mut AppendState{ref mut file, ref htmp, ..} = &mut *state;
+              file.write_all(htmp.as_bytes()).unwrap();
+            }
             state.htmp.clear();
+            let _ = replace(&mut state.head, Header::default());
+            state.hctr += 1;
+            state.hrow = 0;
             state.hoff = next_off;
             state.hcur = next_off;
             state.doff = next_doff;
@@ -723,8 +868,17 @@ impl CellSplit {
           break;
         }
         state.hrow += 1;
-        state.file.seek(SeekFrom::Start(state.doff)).unwrap();
-        state.file.write_all(data).unwrap();
+        let off = state.doff;
+        let eoff = state.doff + data.len() as u64;
+        assert_eq!(off, row.off);
+        assert_eq!(eoff, row.eoff);
+        let next_doff = ((eoff + 0x200 - 1) / 0x200) * 0x200;
+        state.doff = next_doff;
+        shared.doff[rank] = next_doff;
+        {
+          state.file.seek(SeekFrom::Start(off)).unwrap();
+          state.file.write_all(data).unwrap();
+        }
         /*
         state.file.set_len(state.doff + data.len() as u64).unwrap();
         let mem = crate::mmap::MmapFile::from_file_part(
@@ -739,36 +893,120 @@ impl CellSplit {
         ); }
         drop(mem);
         */
-        let off = state.doff;
-        let eoff = state.doff + data.len() as u64;
-        assert_eq!(off, row.off);
-        assert_eq!(eoff, row.eoff);
-        state.doff = ((eoff + 0x200 - 1) / 0x200) * 0x200;
         (off, eoff)
       }
       _ => unreachable!()
     }
   }
+
+  pub fn nonblocking_put_unsafe<K: AsRef<str>, T: Into<CellType>, R: Into<CellRepr>>(&mut self, key: K, ty: T, rep: R, data: &[u8]) -> (u64, u64) {
+    self._append();
+    match &mut self.mode {
+      &mut Mode::Append(ref mut shared, ref mut states) => {
+        let (rank, last_doff) = if states.len() == 0 {
+          panic!("bug");
+        } else if states.len() == 1 {
+          (0, 0)
+        } else {
+          // FIXME: the nonblocking version of put needs
+          // an atomic copy of doff.
+          let mut min_doff = None;
+          for rank in 0 .. states.len() {
+            let rank_doff = shared.doff[rank];
+            match min_doff {
+              None => {
+                min_doff = Some((rank, rank_doff));
+              }
+              Some((_, o_doff)) => if rank_doff < o_doff {
+                min_doff = Some((rank, rank_doff));
+              }
+            }
+          }
+          min_doff.unwrap()
+        };
+        let mut state = states[rank].lock().unwrap();
+        if last_doff != 0 {
+          assert_eq!(last_doff, state.doff);
+        }
+        assert_eq!(state.hcur, state.hoff);
+        let olen = state.htmp.len();
+        assert!(olen + 40 < 0x1000);
+        let key = key.as_ref();
+        let mut row = Row{
+          key: key.into(),
+          ty: ty.into(),
+          rep: rep.into(),
+          off: state.doff,
+          eoff: state.doff + data.len() as u64,
+          hash: Vec::new(),
+        };
+        let mut hbuf = Vec::with_capacity(64);
+        hbuf.resize(64, 0);
+        let mut hval = HashVal{
+          fun: HashFun::Blake2b,
+          val: HashHexVal{buf: hbuf},
+        };
+        row.hash.push(hval);
+        let mut retry = false;
+        loop {
+          {
+            let mut enc = JsonEncoder::new(&mut state.htmp);
+            row.encode(&mut enc).unwrap();
+          }
+          state.htmp.push('\n');
+          state.head.rows.push(row.clone());
+          if state.htmp.len() + 40 >= 0x1000 {
+            assert!(!retry);
+            state.htmp.truncate(olen);
+            state.head.rows.pop();
+            let next_off = ((state.doff + 0x1000 - 1) / 0x1000) * 0x1000;
+            let next_doff = next_off + 0x1000;
+            let next = NextHeader{next_off};
+            {
+              let mut enc = JsonEncoder::new(&mut state.htmp);
+              next.encode(&mut enc).unwrap();
+            }
+            state.htmp.push('\n');
+            assert!(state.htmp.len() < 0x1000);
+            state.head.next = Some(next);
+            let htmp = replace(&mut state.htmp, String::new());
+            let head = replace(&mut state.head, Header::default());
+            /*println!("DEBUG:  CellSplit::nonblocking_put_unsafe: header: rank={} hctr={} hoff={} head.rows.len={}",
+                rank, state.hctr, state.hoff, head.rows.len());
+            for (i, row) in head.rows.iter().enumerate() {
+              println!("DEBUG:  CellSplit::nonblocking_put_unsafe: header:   row[{}]: key={:?} ty={:?} o={} eo={}",
+                  i, row.key, row.ty, row.off, row.eoff);
+            }*/
+            self.pool.put_header(rank, states[rank].clone(), state.hctr, state.hoff, htmp, head);
+            state.hctr += 1;
+            state.hrow = 0;
+            state.hoff = next_off;
+            state.hcur = next_off;
+            state.doff = next_doff;
+            row.off = state.doff;
+            row.eoff = state.doff + data.len() as u64;
+            retry = true;
+            continue;
+          }
+          break;
+        }
+        let hctr = state.hctr;
+        let hrow = state.hrow;
+        state.hrow += 1;
+        let off = state.doff;
+        let eoff = state.doff + data.len() as u64;
+        assert_eq!(off, row.off);
+        assert_eq!(eoff, row.eoff);
+        let next_doff = ((eoff + 0x200 - 1) / 0x200) * 0x200;
+        state.doff = next_doff;
+        shared.doff[rank] = next_doff;
+        drop(state);
+        /*println!("DEBUG:  CellSplit::nonblocking_put_unsafe: row:    rank={} hctr={} hrow={} key={:?} ty={:?} o={} eo={}",
+            rank, hctr, hrow, row.key, row.ty, row.off, row.eoff);*/
+        self.pool.put_row_unsafe(rank, states[rank].clone(), hctr, hrow, row, data.as_ptr(), data.len());
+        (off, eoff)
+      }
+      _ => unreachable!(),
+    }
+  }
 }
-
-/*pub struct CellSplitFile {
-  // TODO
-}
-
-impl CellSplitFile {
-  /*pub fn iter_headers(&self) -> impl Iterator<Item=Header> {
-    unimplemented!();
-  }*/
-
-  pub fn latest_version(&self) -> Version {
-    unimplemented!();
-  }
-
-  pub fn get_latest<S: AsRef<str>>(&self, key: S) -> Option<Row> {
-    unimplemented!();
-  }
-
-  pub fn get<S: AsRef<str>>(&self, key: S, ver: Version) -> Option<Row> {
-    unimplemented!();
-  }
-}*/
