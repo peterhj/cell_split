@@ -468,7 +468,6 @@ pub(crate) struct AppendState {
   file: File,
   hoff: u64,
   hcur: u64,
-  //htmp: Vec<u8>,
   htmp: String,
   head: Header,
   hrow: u32,
@@ -579,17 +578,25 @@ impl CellSplit {
   }
 
   pub fn new_<P: AsRef<Path>>(paths: &[P]) -> CellSplit {
+    println!("DEBUG:  CellSplit::new_: blake2::about={:?}", blake2::about());
     let n = paths.len();
     let mut path = Vec::with_capacity(paths.len());
     let mut srcs = BTreeSet::new();
     for (r, p) in paths.iter().enumerate() {
       let p = PathBuf::from(p.as_ref());
-      match DfParse::open(&p) {
-        Err(_) => {
-          println!("WARNING:CellSplit::new_: failed to query disk source for rank {}", r);
+      match p.parent() {
+        None => {
+          println!("WARNING:CellSplit::new_: failed to query disk source for rank {} (path parent?)", r);
         }
-        Ok(parse) => {
-          srcs.insert(parse.source);
+        Some(p2) => {
+          match DfParse::open(&p2) {
+            Err(_) => {
+              println!("WARNING:CellSplit::new_: failed to query disk source for rank {} (df?)", r);
+            }
+            Ok(parse) => {
+              srcs.insert(parse.source);
+            }
+          }
         }
       }
       path.push(p);
@@ -641,11 +648,8 @@ impl CellSplit {
             file,
             hoff: 0,
             hcur: 0,
-            //htmp: Vec::new(),
             htmp: String::new(),
             head: Header::default(),
-            //hash: Vec::new(),
-            //hpos: Vec::new(),
             hrow: 0,
             hctr: 0,
             sync: false,
@@ -908,8 +912,6 @@ impl CellSplit {
         } else if states.len() == 1 {
           (0, 0)
         } else {
-          // FIXME: the nonblocking version of put needs
-          // an atomic copy of doff.
           let mut min_doff = None;
           for rank in 0 .. states.len() {
             let rank_doff = shared.doff[rank];
@@ -925,9 +927,7 @@ impl CellSplit {
           min_doff.unwrap()
         };
         let mut state = states[rank].lock().unwrap();
-        if last_doff != 0 {
-          assert_eq!(last_doff, state.doff);
-        }
+        assert_eq!(last_doff, state.doff);
         assert_eq!(state.hcur, state.hoff);
         let olen = state.htmp.len();
         assert!(olen + 40 < 0x1000);

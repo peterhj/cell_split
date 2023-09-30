@@ -13,7 +13,7 @@ use std::slice::{from_raw_parts};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{SyncSender, Receiver, sync_channel, channel};
-use std::thread::{JoinHandle, Thread, park, spawn};
+use std::thread::{JoinHandle, Thread, spawn};
 
 #[derive(Clone)]
 enum SwapCtl2Thread {
@@ -47,7 +47,6 @@ impl Drop for SwapThreadPool {
   fn drop(&mut self) {
     for &(ref ctl2th, ref h_pre, _) in self.ctl2th.iter() {
       ctl2th.send(SwapCtl2Thread::Shutdown).unwrap();
-      //h_pre.thread().unpark();
     }
     for (_, h_pre, h_post) in self.ctl2th.drain(..) {
       h_pre.join().unwrap();
@@ -66,62 +65,8 @@ impl SwapThreadPool {
       let th2th_tx2 = th2th_tx.clone();
       let th2ctl_tx = th2ctl_tx.clone();
       let h_post = spawn(move || {
-        let mut hash_buf = BTreeMap::new();
-        let mut hash_fin = BTreeSet::new();
-        //let mut headers: Vec<(Arc<Mutex<AppendState>>, u16, u64, String, Header)> = Vec::new();
-        //let mut next_headers = Vec::new();
+        let mut hash_queue = BTreeMap::new();
         'recv: loop {
-          //park();
-          /*if headers.len() > 0 {
-            'headers: loop {
-              match headers.pop() {
-                None => break,
-                Some((state, hctr, hoff, htmp, mut header)) => {
-              let mut htmp2 = String::new();
-              {
-                let mut enc = JsonEncoder::new(&mut htmp2);
-                header.split.encode(&mut enc).unwrap();
-              }
-              htmp2.push('\n');
-              for (i, row) in header.rows.iter_mut().enumerate() {
-                if !hash_fin.contains(&(hctr, i as u32)) {
-                match hash_buf.remove(&(hctr, i as u32)) {
-                  None => {
-                    println!("DEBUG:  SwapThreadPool: rank={} hctr={} hrow={} missing hash (retry)", rank, hctr, i);
-                    next_headers.push((state, hctr, hoff, htmp, header));
-                    continue 'headers;
-                  }
-                  Some(h) => {
-                    row.hash = h;
-                    hash_fin.insert((hctr, i as u32));
-                  }
-                }
-                }
-                {
-                  let mut enc = JsonEncoder::new(&mut htmp2);
-                  row.encode(&mut enc).unwrap();
-                }
-                htmp2.push('\n');
-              }
-              if let Some(next) = header.next.as_ref() {
-                {
-                  let mut enc = JsonEncoder::new(&mut htmp2);
-                  next.encode(&mut enc).unwrap();
-                }
-                htmp2.push('\n');
-              }
-              assert_eq!(htmp.len(), htmp2.len());
-              println!("DEBUG:  SwapThreadPool: rank={} hctr={} hoff={} put header (retry)...", rank, hctr, hoff);
-              {
-                let mut state = state.lock().unwrap();
-                state.file.seek(SeekFrom::Start(hoff)).unwrap();
-                state.file.write_all(htmp2.as_bytes()).unwrap();
-              }
-                }
-              }
-            }
-            swap(&mut headers, &mut next_headers);
-          }*/
           match th2th_rx.recv() {
             Ok(SwapThread2Thread::Shutdown) => {
               break;
@@ -139,20 +84,16 @@ impl SwapThreadPool {
                 htmp2.push('\n');
               }
               for (i, row) in header.rows.iter_mut().enumerate() {
-                //assert!(!hash_fin.contains(&(hctr, i as u32)));
-                if !hash_fin.contains(&(hctr, i as u32)) {
-                match hash_buf.remove(&(hctr, i as u32)) {
+                match hash_queue.remove(&(hctr, i as u32)) {
                   None => {
                     println!("DEBUG:  SwapThreadPool: rank={} hctr={} hrow={} missing hash", rank, hctr, i);
-                    //headers.push((state, hctr, hoff, htmp, header));
+                    //panic!("bug");
                     th2th_tx2.send(SwapThread2Thread::PutHeader(state, hctr, hoff, htmp, header)).unwrap();
                     continue 'recv;
                   }
                   Some(h) => {
                     row.hash = h;
-                    hash_fin.insert((hctr, i as u32));
                   }
-                }
                 }
                 {
                   let mut enc = JsonEncoder::new(&mut htmp2);
@@ -178,7 +119,7 @@ impl SwapThreadPool {
             Ok(SwapThread2Thread::PutRowUnsafe(state, hctr, hrow, row, data_ptr, data_sz)) => {
               //println!("DEBUG:  SwapThreadPool: rank={} hctr={} hrow={} put row...", rank, hctr, hrow);
               let Row{off, hash, ..} = row;
-              assert!(hash_buf.insert((hctr, hrow), hash).is_none());
+              assert!(hash_queue.insert((hctr, hrow), hash).is_none());
               {
                 let mut state = state.lock().unwrap();
                 let data = unsafe { from_raw_parts(data_ptr as *const u8, data_sz) };
@@ -193,7 +134,6 @@ impl SwapThreadPool {
       let post_th = h_post.thread().clone();
       let h_pre = spawn(move || {
         loop {
-          //park();
           match ctl2th_rx.recv() {
             Ok(SwapCtl2Thread::Shutdown) => {
               th2th_tx.send(SwapThread2Thread::Shutdown).unwrap();
@@ -269,7 +209,6 @@ impl SwapThreadPool {
     {
       let &(ref ctl2th, ref h, _) = &self.ctl2th[rank];
       ctl2th.send(SwapCtl2Thread::PutRowUnsafe(state, hctr, hrow, row, data_ptr as usize, data_sz)).unwrap();
-      //h.thread().unpark();
     }
   }
 }
