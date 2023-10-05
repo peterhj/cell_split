@@ -83,10 +83,11 @@ impl SwapThreadPool {
                 }
                 htmp2.push('\n');
               }
+              let nrows = header.rows.len();
               for (i, row) in header.rows.iter_mut().enumerate() {
                 match hash_queue.remove(&(hctr, i as u32)) {
                   None => {
-                    println!("DEBUG:  SwapThreadPool: rank={} hctr={} hrow={} missing hash", rank, hctr, i);
+                    println!("DEBUG:  SwapThreadPool: rank={} hctr={} hrow={}/{} missing hash", rank, hctr, i, nrows);
                     //panic!("bug");
                     th2th_tx2.send(SwapThread2Thread::PutHeader(state, hctr, hoff, htmp, header)).unwrap();
                     continue 'recv;

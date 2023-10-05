@@ -120,11 +120,17 @@ pub struct Version {
   pub up: i32,
 }*/
 
-#[derive(Clone, Debug, RustcDecodable, RustcEncodable)]
+#[derive(Clone, RustcDecodable, RustcEncodable)]
 //#[derive(Clone, Debug)]
 pub struct CellType {
   pub shape: Box<[i64]>,
   pub dtype: Dtype,
+}
+
+impl Debug for CellType {
+  fn fmt(&self, f: &mut Formatter) -> FmtResult {
+    write!(f, "CellType({:?}{})", self.shape, self.dtype.to_str())
+  }
 }
 
 #[repr(u8)]
@@ -280,7 +286,7 @@ impl Encodable for Dtype {
   }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CellRepr {
   Nd,
 }
@@ -391,7 +397,7 @@ pub struct HashVal {
 
 impl Debug for HashVal {
   fn fmt(&self, f: &mut Formatter) -> FmtResult {
-    write!(f, "HashVal({:?}, {})", self.fun, self.val.buf.to_hex())
+    write!(f, "HashVal({:?}: {})", self.fun, self.val.buf.to_hex())
   }
 }
 
@@ -538,13 +544,17 @@ impl Drop for CellSplit {
             continue;
           }
           assert!(state.htmp.len() < 0x1000);
+          assert!(state.head.next.is_none());
           assert_eq!(state.hcur, state.hoff);
           let htmp = replace(&mut state.htmp, String::new());
           let head = replace(&mut state.head, Header::default());
           self.pool.put_header(rank, states[rank].clone(), state.hctr, state.hoff, htmp, head);
+          state.hctr += 1;
+          state.hrow = 0;
           //self.pool.sync(rank);
           state.hcur += state.htmp.len() as u64;
           assert!(state.hcur < state.hoff + 0x1000);
+          assert_eq!(state.hcur, state.hoff + state.htmp.len() as u64);
         }
         /*for rank in 0 .. states.len() {
           let mut state = states[rank].lock().unwrap();
@@ -578,7 +588,7 @@ impl CellSplit {
   }
 
   pub fn new_<P: AsRef<Path>>(paths: &[P]) -> CellSplit {
-    println!("DEBUG:  CellSplit::new_: blake2::about={:?}", blake2::about());
+    //println!("DEBUG:  CellSplit::new_: blake2::about={:?}", blake2::about());
     let n = paths.len();
     let mut path = Vec::with_capacity(paths.len());
     let mut srcs = BTreeSet::new();
@@ -749,29 +759,62 @@ impl CellSplit {
     }
   }
 
-  pub fn headers(&mut self) -> Vec<Header> {
+  pub fn paths(&self) -> &[PathBuf] {
+    &self.path
+  }
+
+  pub fn headers(&mut self) -> Vec<(u32, Header)> {
+    self.clone_headers()
+  }
+
+  pub fn clone_headers(&mut self) -> Vec<(u32, Header)> {
     self._index();
     match &self.mode {
       &Mode::Index(ref states) => {
-        // FIXME
-        states[0].head.clone()
+        let mut headers = Vec::new();
+        for (rank, state) in states.iter().enumerate() {
+          for h in state.head.iter() {
+            headers.push((rank as u32, h.clone()));
+          }
+        }
+        headers
       }
       _ => panic!("bug")
     }
   }
 
-  pub fn get<K: AsRef<str>>(&mut self, key: K) -> (CellType, CellRepr, u64, u64) {
+  pub fn clone_keys(&mut self) -> BTreeSet<SmolStr> {
+    self._index();
+    match &self.mode {
+      &Mode::Index(ref states) => {
+        let mut keys = BTreeSet::new();
+        for state in states.iter() {
+          for h in state.head.iter() {
+            for row in h.rows.iter() {
+              assert!(keys.insert(row.key.clone()));
+            }
+          }
+        }
+        keys
+      }
+      _ => panic!("bug")
+    }
+  }
+
+  pub fn get<K: AsRef<str>>(&mut self, key: K) -> (CellType, CellRepr, u32, u64, u64) {
     self._index();
     match &self.mode {
       &Mode::Index(ref states) => {
         let key = key.as_ref();
-        // FIXME
-        match states[0].key.get(key) {
-          None => panic!("bug"),
-          Some(val) => {
-            (val.ty.clone(), val.rep, val.off, val.eoff)
+        for (rank, state) in states.iter().enumerate() {
+          match state.key.get(key) {
+            None => panic!("bug"),
+            Some(val) => {
+              return (val.ty.clone(), val.rep, rank as u32, val.off, val.eoff);
+            }
           }
         }
+        panic!("bug");
       }
       _ => panic!("bug")
     }
@@ -785,7 +828,7 @@ impl CellSplit {
     unimplemented!();
   }*/
 
-  pub fn put<K: AsRef<str>, T: Into<CellType>, R: Into<CellRepr>>(&mut self, key: K, ty: T, rep: R, data: &[u8]) -> (u64, u64) {
+  /*pub fn put<K: AsRef<str>, T: Into<CellType>, R: Into<CellRepr>>(&mut self, key: K, ty: T, rep: R, data: &[u8]) -> (u64, u64) {
     self._append();
     match &mut self.mode {
       &mut Mode::Append(ref mut shared, ref mut states) => {
@@ -901,7 +944,7 @@ impl CellSplit {
       }
       _ => unreachable!()
     }
-  }
+  }*/
 
   pub fn nonblocking_put_unsafe<K: AsRef<str>, T: Into<CellType>, R: Into<CellRepr>>(&mut self, key: K, ty: T, rep: R, data: &[u8]) -> (u64, u64) {
     self._append();
