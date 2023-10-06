@@ -808,13 +808,13 @@ impl CellSplit {
         let key = key.as_ref();
         for (rank, state) in states.iter().enumerate() {
           match state.key.get(key) {
-            None => panic!("bug"),
+            None => {}
             Some(val) => {
               return (val.ty.clone(), val.rep, rank as u32, val.off, val.eoff);
             }
           }
         }
-        panic!("bug");
+        panic!("bug: CellSplit::get: missing key");
       }
       _ => panic!("bug")
     }
