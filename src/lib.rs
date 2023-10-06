@@ -947,6 +947,10 @@ impl CellSplit {
   }*/
 
   pub fn nonblocking_put_unsafe<K: AsRef<str>, T: Into<CellType>, R: Into<CellRepr>>(&mut self, key: K, ty: T, rep: R, data: &[u8]) -> (u64, u64) {
+    self.put_nonblocking_unsafe(key, ty, rep, data)
+  }
+
+  pub fn put_nonblocking_unsafe<K: AsRef<str>, T: Into<CellType>, R: Into<CellRepr>>(&mut self, key: K, ty: T, rep: R, data: &[u8]) -> (u64, u64) {
     self._append();
     match &mut self.mode {
       &mut Mode::Append(ref mut shared, ref mut states) => {
