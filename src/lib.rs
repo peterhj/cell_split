@@ -50,6 +50,7 @@ pub struct SplitInner {
 }*/
 
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum SplitRepr {
   // TODO
   One,
@@ -201,6 +202,7 @@ impl FromStr for CellType {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Dtype {
   F64 = 1,
   F32,
@@ -253,6 +255,7 @@ impl Dtype {
       &Dtype::U8  => "u8",
       &Dtype::F16 => "f16",
       &Dtype::Bf16 => "bf16",
+      _ => unimplemented!()
     }
   }
 
@@ -270,6 +273,7 @@ impl Dtype {
       &Dtype::U8  => 1,
       &Dtype::F16 => 2,
       &Dtype::Bf16 => 2,
+      _ => unimplemented!()
     })
   }
 }
@@ -287,6 +291,7 @@ impl Encodable for Dtype {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum CellRepr {
   Nd,
 }
@@ -323,6 +328,7 @@ impl Encodable for CellRepr {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum HashFun {
   Blake2b,
   Blake3,

@@ -35,6 +35,7 @@ impl From<DecoderError> for Error {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum TensorDtype {
   F64,
   F32,
@@ -90,6 +91,7 @@ impl TensorDtype {
       &TensorDtype::Bool => "BOOL",
       &TensorDtype::F16 => "F16",
       &TensorDtype::Bf16 => "BF16",
+      _ => unimplemented!()
     }
   }
 
@@ -108,6 +110,7 @@ impl TensorDtype {
       &TensorDtype::Bool => 1,
       &TensorDtype::F16 => 2,
       &TensorDtype::Bf16 => 2,
+      _ => unimplemented!()
     })
   }
 }
