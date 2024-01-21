@@ -5,10 +5,11 @@ edition = "2018"
 license = "ISC OR Apache-2.0"
 
 [features]
-nightly = ["blake2/simd"]
+default = []
+nightly = ["blake2"]
 
 [dependencies]
-blake2 = { path = "../blake2" }
+blake2 = { path = "../blake2", features = ["simd"], optional = true }
 byteorder = { path = "../byteorder" }
 rustc_serialize = { path = "../rustc_serialize" }
 smol_str = { path = "../smol_str", default-features = false }
